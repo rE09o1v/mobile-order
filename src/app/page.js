@@ -15,6 +15,8 @@ import {
   deleteDoc,
   updateDoc,
   setDoc,
+  query,
+  where,
 } from "firebase/firestore";
 import {
   getStorage,
@@ -23,6 +25,13 @@ import {
   getDownloadURL,
   deleteObject,
 } from "firebase/storage";
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  signOut,
+  onAuthStateChanged,
+  createUserWithEmailAndPassword,
+} from "firebase/auth";
 import {
   Wifi,
   BatteryFull,
@@ -45,13 +54,13 @@ import { Html5QrcodeScanner } from "html5-qrcode";
 // --- Firebaseの初期設定 ---
 // Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "AIzaSyB-x6D3zA8o9LNXTpMjQK142Lw66z549PA",
-  authDomain: "f-ice-913c7.firebaseapp.com",
-  projectId: "f-ice-913c7",
-  storageBucket: "f-ice-913c7.firebasestorage.app",
-  messagingSenderId: "966826031567",
-  appId: "1:966826031567:web:85b08aab43d2e0eb303aba",
-  measurementId: "G-NBN18MQRPC"
+  apiKey: "AIzaSyDGJogWTTBYu-iyLegKEpc23TsRWO3k_oc",
+  authDomain: "mobee-886de.firebaseapp.com",
+  projectId: "mobee-886de",
+  storageBucket: "mobee-886de.firebasestorage.app",
+  messagingSenderId: "866025671192",
+  appId: "1:866025671192:web:ebc1b25fc7cbfcbcf7116d",
+  measurementId: "G-RQ5TYTML4V",
 };
 
 // --- Firebaseアプリの初期化 ---
@@ -59,10 +68,12 @@ const firebaseConfig = {
 let app;
 let db;
 let storage;
+let auth;
 if (firebaseConfig.apiKey !== "YOUR_API_KEY") {
   app = initializeApp(firebaseConfig);
   db = getFirestore(app);
   storage = getStorage(app);
+  auth = getAuth(app);
 }
 
 // --- 画像アップロード関数 ---
@@ -121,70 +132,175 @@ const deleteImage = async (imageUrl) => {
   }
 };
 
-// --- ダミーデータ設定用の関数 ---
+// --- マルチテナント対応の初期データセットアップ関数 ---
 // 初回実行時にFirestoreにサンプルデータを作成します。
 const setupInitialData = async () => {
   if (!db) return; // DBが初期化されていなければ何もしない
   console.log("初期データのセットアップを確認します...");
 
   // データをリセットする場合は、この行をコメントアウトしてください
-  //await deleteDoc(doc(db, "metadata", "setupComplete"));
+  await deleteDoc(doc(db, "metadata", "setupComplete"));
 
   const metadataDoc = await getDoc(doc(db, "metadata", "setupComplete"));
   if (!metadataDoc.exists()) {
     console.log("初期データを作成します...");
+    
+    // デフォルトテナントID
+    const defaultTenantId = "demo-store-001";
+    
+    // テナント（店舗）データ
+    const tenantData = {
+      id: defaultTenantId,
+      name: "サンプル飲食店",
+      plan: "standard", // start, standard, pro
+      createdAt: new Date(),
+      settings: {
+        description: "美味しい料理とドリンクをお楽しみください",
+        address: "東京都渋谷区サンプル1-2-3",
+        phone: "03-1234-5678",
+        logoUrl: "",
+        themeColor: "#3B82F6",
+        taxRate: 0.10,
+        taxType: "inclusive", // inclusive: 内税, exclusive: 外税
+        serviceCharge: 0,
+        businessHours: {
+          monday: { open: "11:00", close: "22:00", closed: false },
+          tuesday: { open: "11:00", close: "22:00", closed: false },
+          wednesday: { open: "11:00", close: "22:00", closed: false },
+          thursday: { open: "11:00", close: "22:00", closed: false },
+          friday: { open: "11:00", close: "22:00", closed: false },
+          saturday: { open: "11:00", close: "22:00", closed: false },
+          sunday: { open: "11:00", close: "22:00", closed: false }
+        },
+        paymentMethods: ["cash", "credit_card", "qr_payment"]
+      }
+    };
+
+    // カテゴリデータ（マルチテナント対応）
+    const categories = [
+      { id: "main", tenantId: defaultTenantId, name: "メイン料理", order: 1 },
+      { id: "drinks", tenantId: defaultTenantId, name: "ドリンク", order: 2 },
+      { id: "desserts", tenantId: defaultTenantId, name: "デザート", order: 3 }
+    ];
+
+    // 汎用的なサンプル商品データ（マルチテナント対応）
     const initialProducts = [
       {
-        id: "vanilla",
-        name: "濃厚バニラ",
-        price: 300,
+        id: "hamburger",
+        tenantId: defaultTenantId,
+        name: "クラシックハンバーガー",
+        price: 890,
+        category: "main",
         stock: 50,
         maxStock: 100,
-        imageUrl: "/images/choco-mint.jpg",
-        description: "厳選されたマダガスカル産バニラビーンズを使用した、濃厚でクリーミーなアイスクリームです。口いっぱいに広がる上品な甘さをお楽しみください。",
-        nutrition: "エネルギー: 180kcal, タンパク質: 3.2g, 脂質: 8.5g, 炭水化物: 22.1g, 食塩相当量: 0.15g (100g当たり)",
-        allergens: "乳成分、卵を含む"
+        imageUrl: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400&h=300&fit=crop",
+        description: "新鮮な野菜と厚切りビーフパティを使用したクラシックなハンバーガーです。",
+        nutrition: "エネルギー: 520kcal, タンパク質: 25g, 脂質: 28g, 炭水化物: 42g, 食塩相当量: 2.1g",
+        allergens: "小麦、卵、乳成分、大豆、牛肉を含む",
+        options: []
       },
       {
-        id: "chocolate",
-        name: "とろけるチョコ",
-        price: 350,
-        stock: 50,
-        maxStock: 100,
-        imageUrl: "https://images.unsplash.com/photo-1488900128323-21503983a07e?w=400&h=300&fit=crop",
-        description: "ベルギー産高級カカオを贅沢に使用したチョコレートアイスクリーム。深いコクと滑らかな口当たりが特徴的な逸品です。",
-        nutrition: "エネルギー: 195kcal, タンパク質: 4.1g, 脂質: 9.8g, 炭水化物: 21.5g, 食塩相当量: 0.18g (100g当たり)",
-        allergens: "乳成分、卵、大豆を含む"
-      },
-      {
-        id: "strawberry",
-        name: "果肉いちご",
-        price: 350,
-        stock: 40,
-        maxStock: 80,
-        imageUrl: "https://images.unsplash.com/photo-1501443762994-82bd5dace89a?w=400&h=300&fit=crop",
-        description: "栃木県産とちおとめを丸ごと使用し、果肉の食感を残したフルーティーなアイスクリーム。いちご本来の甘酸っぱさが楽しめます。",
-        nutrition: "エネルギー: 165kcal, タンパク質: 2.8g, 脂質: 7.2g, 炭水化物: 24.3g, 食塩相当量: 0.12g (100g当たり)",
-        allergens: "乳成分、卵を含む"
-      },
-      {
-        id: "matcha",
-        name: "本格抹茶",
-        price: 400,
+        id: "pasta",
+        tenantId: defaultTenantId,
+        name: "トマトクリームパスタ",
+        price: 1200,
+        category: "main",
         stock: 30,
-        maxStock: 60,
-        imageUrl: "https://images.unsplash.com/photo-1556909114-f6e7ad7d3136?w=400&h=300&fit=crop",
-        description: "京都宇治産の最高級抹茶を使用した本格的な和風アイスクリーム。抹茶の深い味わいと上品な苦味が楽しめる大人の味です。",
-        nutrition: "エネルギー: 175kcal, タンパク質: 3.5g, 脂質: 8.1g, 炭水化物: 20.8g, 食塩相当量: 0.14g (100g当たり)",
-        allergens: "乳成分、卵を含む"
+        maxStock: 50,
+        imageUrl: "https://images.unsplash.com/photo-1621996346565-e3dbc92d447c?w=400&h=300&fit=crop",
+        description: "完熟トマトと濃厚クリームが絶妙にマッチしたパスタです。",
+        nutrition: "エネルギー: 480kcal, タンパク質: 15g, 脂質: 18g, 炭水化物: 65g, 食塩相当量: 2.5g",
+        allergens: "小麦、乳成分を含む",
+        options: [
+          { id: "size", name: "サイズ", type: "radio", required: true, choices: [
+            { id: "regular", name: "レギュラー", price: 0 },
+            { id: "large", name: "ラージ", price: 200 }
+          ]}
+        ]
       },
+      {
+        id: "coffee",
+        tenantId: defaultTenantId,
+        name: "ブレンドコーヒー",
+        price: 350,
+        category: "drinks",
+        stock: 100,
+        maxStock: 150,
+        imageUrl: "https://images.unsplash.com/photo-1497935586351-b67a49e012bf?w=400&h=300&fit=crop",
+        description: "厳選されたコーヒー豆を使用したオリジナルブレンドです。",
+        nutrition: "エネルギー: 5kcal, カフェイン: 90mg",
+        allergens: "なし",
+        options: [
+          { id: "size", name: "サイズ", type: "radio", required: true, choices: [
+            { id: "hot", name: "ホット", price: 0 },
+            { id: "iced", name: "アイス", price: 0 }
+          ]}
+        ]
+      },
+      {
+        id: "cheesecake",
+        tenantId: defaultTenantId,
+        name: "ニューヨークチーズケーキ",
+        price: 450,
+        category: "desserts",
+        stock: 20,
+        maxStock: 40,
+        imageUrl: "https://images.unsplash.com/photo-1533134242443-d4fd215305ad?w=400&h=300&fit=crop",
+        description: "濃厚でクリーミーなニューヨーク風チーズケーキです。",
+        nutrition: "エネルギー: 320kcal, タンパク質: 8g, 脂質: 24g, 炭水化物: 20g, 食塩相当量: 0.8g",
+        allergens: "小麦、卵、乳成分を含む",
+        options: []
+      }
     ];
+
+    // 管理者アカウント情報（既存のFirebase Authアカウント）
+    const adminEmail = "admin@mail.com";
+    const adminPassword = "admin0000";
+
+    // 既存のadmin@mail.comアカウントのUIDを取得
+    let adminUid = "admin-staff-001"; // フォールバック用
+    try {
+      // 既存アカウントでログインしてUIDを取得
+      const userCredential = await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
+      adminUid = userCredential.user.uid;
+      await signOut(auth); // すぐにログアウト
+      console.log("管理者アカウントのUID取得:", adminEmail, "UID:", adminUid);
+    } catch (authError) {
+      console.error("管理者アカウントのUID取得でエラー:", authError);
+      console.log("Firebase Authアカウントが存在しない可能性があります。Firebaseコンソールで作成してください。");
+      // エラーが発生してもフォールバック用のUIDを使用してFirestoreデータは作成
+    }
+
+    // 管理者用スタッフアカウントデータ
+    const adminStaffData = {
+      id: adminUid,
+      tenantId: defaultTenantId,
+      role: "owner",
+      name: "管理者",
+      email: adminEmail,
+      createdAt: new Date()
+    };
+
     await runTransaction(db, async (transaction) => {
+      // テナント（店舗）データを保存
+      transaction.set(doc(db, "tenants", defaultTenantId), tenantData);
+      
+      // 管理者スタッフデータを保存（正しいUIDを使用）
+      transaction.set(doc(db, "staff", adminUid), adminStaffData);
+      
+      // カテゴリを保存
+      categories.forEach((category) => {
+        transaction.set(doc(db, "categories", category.id), category);
+      });
+      
+      // 商品を保存
       initialProducts.forEach((prod) => {
         transaction.set(doc(db, "products", prod.id), prod);
       });
+      
+      // メタデータを保存（テナント毎）
       transaction.set(doc(db, "metadata", "setupComplete"), { done: true });
-      transaction.set(doc(db, "metadata", "latestOrder"), { number: 0 });
+      transaction.set(doc(db, "metadata", `latestOrder_${defaultTenantId}`), { number: 0 });
     });
     console.log("初期データを作成しました。");
   } else {
@@ -192,26 +308,46 @@ const setupInitialData = async () => {
   }
 };
 
-// --- 管理画面ログインモーダル ---
-const AdminLoginModal = ({ isOpen, onClose, onLogin }) => {
+// --- スタッフログインモーダル ---
+const StaffLoginModal = ({ isOpen, onClose, onLogin }) => {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!email.trim() || !password.trim()) return;
+
     setIsLoading(true);
     setError("");
 
-    // パスワードをチェック（デフォルト: "admin123"）
-    const correctPassword = "staff1fstd";
-
-    if (password === correctPassword) {
-      // ログイン成功
-      onLogin();
-      setPassword("");
-    } else {
-      setError("パスワードが正しくありません");
+    try {
+      // Firebase Authentication でログイン
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const user = userCredential.user;
+      
+      // スタッフ情報を取得
+      const staffDoc = await getDoc(doc(db, "staff", user.uid));
+      if (staffDoc.exists()) {
+        const staffData = staffDoc.data();
+        onLogin(user, staffData);
+        setEmail("");
+        setPassword("");
+      } else {
+        setError("スタッフ情報が見つかりません");
+      }
+    } catch (error) {
+      console.error("ログインエラー:", error);
+      if (error.code === 'auth/user-not-found') {
+        setError("ユーザーが見つかりません");
+      } else if (error.code === 'auth/wrong-password') {
+        setError("パスワードが間違っています");
+      } else if (error.code === 'auth/invalid-email') {
+        setError("無効なメールアドレスです");
+      } else {
+        setError("ログインに失敗しました");
+      }
     }
 
     setIsLoading(false);
@@ -223,12 +359,27 @@ const AdminLoginModal = ({ isOpen, onClose, onLogin }) => {
     <div className="fixed inset-0 bg-white/70 flex justify-center items-center z-50">
       <div className="bg-white w-full max-w-md rounded-2xl p-8 shadow-xl">
         <div className="text-center mb-6">
-          <Lock className="mx-auto h-12 w-12 text-blue-500 mb-4" />
-          <h2 className="text-2xl font-bold text-gray-800">管理者認証</h2>
-          <p className="text-gray-600 mt-2">管理画面にアクセスするにはパスワードを入力してください</p>
+          <User className="mx-auto h-12 w-12 text-blue-500 mb-4" />
+          <h2 className="text-2xl font-bold text-gray-800">スタッフログイン</h2>
+          <p className="text-gray-600 mt-2">管理画面にアクセスするためにログインしてください</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+              メールアドレス
+            </label>
+            <input
+              type="email"
+              id="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 bg-white"
+              placeholder="メールアドレスを入力"
+              required
+            />
+          </div>
+          
           <div>
             <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
               パスワード
@@ -273,14 +424,20 @@ const AdminLoginModal = ({ isOpen, onClose, onLogin }) => {
 };
 
 // --- ヘッダーコンポーネント ---
-const AppHeader = ({ page, setPage, onAdminClick, cart, setCartModalOpen }) => (
+const AppHeader = ({ page, setPage, onAdminClick, cart, setCartModalOpen, currentTenant }) => (
   <header className="bg-white/80 backdrop-blur-md shadow-md sticky top-0 z-40">
     <div className="container mx-auto px-4 py-3">
       <div className="flex justify-between items-center">
-        <div className="text-xl font-bold text-gray-800">🍦 Welcome to BlueRush</div>
+        <div className="text-xl font-bold text-gray-800" style={{ color: currentTenant?.settings?.themeColor || "#1F2937" }}>
+          {currentTenant?.name || "モバイルオーダーシステム"}
+        </div>
         {/* カートボタン */}
         <button
-          className="relative bg-blue-500 text-white rounded-full shadow-lg w-12 h-12 flex items-center justify-center hover:bg-blue-600 transition-colors"
+          className="relative text-white rounded-full shadow-lg w-12 h-12 flex items-center justify-center transition-colors"
+          style={{ 
+            backgroundColor: currentTenant?.settings?.themeColor || "#3B82F6",
+            ':hover': { backgroundColor: `${currentTenant?.settings?.themeColor || "#2563EB"}` }
+          }}
           onClick={() => setCartModalOpen(true)}
         >
           <ShoppingCart size={24} />
@@ -297,18 +454,26 @@ const AppHeader = ({ page, setPage, onAdminClick, cart, setCartModalOpen }) => (
         <button
           onClick={() => setPage("customer")}
           className={`flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2 ${page === "customer"
-            ? "text-blue-600 border-b-2 border-blue-600"
+            ? "border-b-2"
             : "text-gray-600"
             }`}
+          style={{ 
+            color: page === "customer" ? currentTenant?.settings?.themeColor || "#2563EB" : "#4B5563",
+            borderColor: page === "customer" ? currentTenant?.settings?.themeColor || "#2563EB" : "transparent"
+          }}
         >
           <ShoppingCart size={16} /> 注文
         </button>
         <button
           onClick={onAdminClick}
           className={`flex-1 py-3 text-sm font-semibold flex items-center justify-center gap-2 ${page === "admin"
-            ? "text-blue-600 border-b-2 border-blue-600"
+            ? "border-b-2"
             : "text-gray-600"
             }`}
+          style={{ 
+            color: page === "admin" ? currentTenant?.settings?.themeColor || "#2563EB" : "#4B5563",
+            borderColor: page === "admin" ? currentTenant?.settings?.themeColor || "#2563EB" : "transparent"
+          }}
         >
           <BarChart2 size={16} /> 管理
         </button>
@@ -621,11 +786,16 @@ const CartModal = ({ cart, setCart, onCheckout, onClose }) => {
 };
 
 // --- 顧客向け注文ページ ---
-const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModalOpen, setCartModalOpen, setSelectedProduct }) => {
+const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModalOpen, setCartModalOpen, setSelectedProduct, currentTenant, categories, currentCategory, setCurrentCategory }) => {
   const handleViewDetail = (product) => {
     setSelectedProduct(product);
     setPage("productDetail");
   };
+
+  // カテゴリでフィルタリングされた商品を取得
+  const filteredProducts = currentCategory === "all" 
+    ? products 
+    : products.filter(product => product.category === currentCategory);
 
   const handleCheckout = async () => {
     console.log("注文処理を開始します:", cart);
@@ -651,8 +821,11 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
           productRefs.map((ref) => transaction.get(ref))
         );
 
-        // 最新の注文番号を取得（読み取り）
-        const latestOrderRef = doc(db, "metadata", "latestOrder");
+        // デフォルトテナントID（実際の環境では動的に取得）
+        const tenantId = "demo-store-001";
+        
+        // 最新の注文番号を取得（テナント毎）
+        const latestOrderRef = doc(db, "metadata", `latestOrder_${tenantId}`);
         const latestOrderSnapshot = await transaction.get(latestOrderRef);
         const lastOrderNumber = latestOrderSnapshot.exists()
           ? latestOrderSnapshot.data().number
@@ -681,6 +854,7 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
         // 注文記録を作成
         const newOrderRef = doc(collection(db, "orders"));
         transaction.set(newOrderRef, {
+          tenantId: tenantId, // テナントIDを追加
           items: orderItems,
           totalAmount: totalAmount,
           createdAt: new Date(),
@@ -707,11 +881,60 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
   return (
     <div className="bg-white min-h-screen font-sans">
       <div className="container mx-auto px-4 py-8">
+        {/* 店舗情報ヘッダー */}
+        {currentTenant && (
+          <div className="mb-8 text-center">
+            <h1 className="text-3xl font-bold text-gray-800 mb-2" style={{ color: currentTenant.settings?.themeColor }}>
+              {currentTenant.name}
+            </h1>
+            <p className="text-gray-600 mb-4">{currentTenant.settings?.description}</p>
+            <div className="text-sm text-gray-500">
+              <p>{currentTenant.settings?.address}</p>
+              <p>TEL: {currentTenant.settings?.phone}</p>
+            </div>
+          </div>
+        )}
+
+        {/* カテゴリフィルター */}
+        {categories.length > 0 && (
+          <div className="mb-6">
+            <div className="flex flex-wrap gap-2 justify-center">
+              <button
+                onClick={() => setCurrentCategory("all")}
+                className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                  currentCategory === "all"
+                    ? "bg-blue-500 text-white"
+                    : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                }`}
+              >
+                すべて
+              </button>
+              {categories.map((category) => (
+                <button
+                  key={category.id}
+                  onClick={() => setCurrentCategory(category.id)}
+                  className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${
+                    currentCategory === category.id
+                      ? "bg-blue-500 text-white"
+                      : "bg-gray-200 text-gray-700 hover:bg-gray-300"
+                  }`}
+                >
+                  {category.name}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         <h2 className="text-2xl font-bold text-gray-800 mb-6">
-          商品をえらんでください
+          {currentCategory === "all" 
+            ? "商品をえらんでください" 
+            : categories.find(c => c.id === currentCategory)?.name || "商品をえらんでください"
+          }
         </h2>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-          {products.map((product) => (
+          {filteredProducts.map((product) => (
             <ProductCard
               key={product.id}
               product={product}
@@ -719,6 +942,13 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
             />
           ))}
         </div>
+
+        {filteredProducts.length === 0 && (
+          <div className="text-center py-12">
+            <p className="text-gray-500">選択されたカテゴリに商品がありません。</p>
+          </div>
+        )}
+
         {/* カートモーダル */}
         {cartModalOpen && (
           <CartModal
@@ -1508,6 +1738,18 @@ const ThankYouPage = ({ completedOrder, setPage }) => {
 };
 
 // --- ★ 新規追加: 設定案内コンポーネント ★ ---
+const AdminLoginInfo = () => (
+  <div className="fixed bottom-4 right-4 bg-blue-50 border border-blue-200 rounded-lg p-4 shadow-lg max-w-xs z-30">
+    <div className="text-sm text-blue-800">
+      <div className="font-bold mb-2">🔑 管理者ログイン情報</div>
+      <div className="space-y-1">
+        <div><strong>メール:</strong> admin@mail.com</div>
+        <div><strong>パスワード:</strong> admin0000</div>
+      </div>
+    </div>
+  </div>
+);
+
 const SetupGuide = () => (
   <div className="flex items-center justify-center min-h-screen bg-gray-100 p-4">
     <div className="max-w-2xl w-full p-8 bg-white rounded-lg shadow-2xl text-center">
@@ -1987,17 +2229,19 @@ const QRScannerPage = ({ onClose, onOrderComplete, setPage }) => {
 };
 
 // --- 商品管理コンポーネント ---
-const ProductManagement = ({ products, onClose, onProductUpdate }) => {
+const ProductManagement = ({ products, categories, currentTenant, onClose, onProductUpdate }) => {
   const [editingProduct, setEditingProduct] = useState(null);
   const [newProduct, setNewProduct] = useState({
     name: "",
     price: 0,
+    category: categories.length > 0 ? categories[0].id : "",
     stock: 0,
     maxStock: 100,
     imageUrl: "",
     description: "",
     nutrition: "",
-    allergens: ""
+    allergens: "",
+    options: []
   });
   const [isAddingProduct, setIsAddingProduct] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -2016,12 +2260,14 @@ const ProductManagement = ({ products, onClose, onProductUpdate }) => {
     setNewProduct({
       name: "",
       price: 0,
+      category: categories.length > 0 ? categories[0].id : "",
       stock: 0,
       maxStock: 100,
       imageUrl: "",
       description: "",
       nutrition: "",
-      allergens: ""
+      allergens: "",
+      options: []
     });
     setEditingProduct(null);
     setIsAddingProduct(true);
@@ -2063,26 +2309,42 @@ const ProductManagement = ({ products, onClose, onProductUpdate }) => {
       if (isAddingProduct) {
         // 新しい商品を追加
         const productId = `product_${Date.now()}`;
+        const tenantId = "demo-store-001"; // 実際の環境では動的に取得
         await setDoc(doc(db, "products", productId), {
           ...newProduct,
+          tenantId: tenantId,
           price: parseInt(newProduct.price),
           stock: parseInt(newProduct.stock),
           maxStock: parseInt(newProduct.maxStock),
           imageUrl: imageUrl
         });
-        setNewProduct({ name: "", price: 0, stock: 0, maxStock: 100, imageUrl: "", description: "", nutrition: "", allergens: "" });
+        setNewProduct({ 
+          name: "", 
+          price: 0, 
+          category: categories.length > 0 ? categories[0].id : "",
+          stock: 0, 
+          maxStock: 100, 
+          imageUrl: "", 
+          description: "", 
+          nutrition: "", 
+          allergens: "",
+          options: []
+        });
         setIsAddingProduct(false);
       } else if (editingProduct) {
         // 既存商品を更新
         await updateDoc(doc(db, "products", editingProduct.id), {
           name: editingProduct.name,
           price: parseInt(editingProduct.price),
+          category: editingProduct.category || (categories.length > 0 ? categories[0].id : ""),
           stock: parseInt(editingProduct.stock),
           maxStock: parseInt(editingProduct.maxStock),
           description: editingProduct.description || "",
           nutrition: editingProduct.nutrition || "",
           allergens: editingProduct.allergens || "",
-          imageUrl: imageUrl
+          options: editingProduct.options || [],
+          imageUrl: imageUrl,
+          // tenantIdは既存のものを維持（更新しない）
         });
         setEditingProduct(null);
       }
@@ -2128,12 +2390,14 @@ const ProductManagement = ({ products, onClose, onProductUpdate }) => {
     setNewProduct({
       name: "",
       price: 0,
+      category: categories.length > 0 ? categories[0].id : "",
       stock: 0,
       maxStock: 100,
       imageUrl: "",
       description: "",
       nutrition: "",
-      allergens: ""
+      allergens: "",
+      options: []
     });
     setSelectedFile(null);
     setImagePreview(null);
@@ -2680,13 +2944,17 @@ export default function App() {
   const [completedOrder, setCompletedOrder] = useState(null);
   const [loading, setLoading] = useState(true);
   const [firebaseError, setFirebaseError] = useState(null);
-  const [adminLoginModalOpen, setAdminLoginModalOpen] = useState(false);
-  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [staffLoginModalOpen, setStaffLoginModalOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [currentStaff, setCurrentStaff] = useState(null);
+  const [currentTenant, setCurrentTenant] = useState(null);
   const [qrScannerOpen, setQrScannerOpen] = useState(false);
   const [cartModalOpen, setCartModalOpen] = useState(false);
   const [cart, setCart] = useState({});
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [successMessage, setSuccessMessage] = useState("");
+  const [categories, setCategories] = useState([]);
+  const [currentCategory, setCurrentCategory] = useState("all");
 
   // 商品詳細ページからのカート追加処理
   const handleAddToCartFromDetail = (product, quantity) => {
@@ -2703,29 +2971,44 @@ export default function App() {
 
   // 管理画面ボタンクリック時の処理
   const handleAdminClick = () => {
-    if (isAdminAuthenticated) {
+    if (currentUser && currentStaff) {
       setPage("admin");
     } else {
-      setAdminLoginModalOpen(true);
+      setStaffLoginModalOpen(true);
     }
   };
 
-  // 管理画面ログイン成功時の処理
-  const handleAdminLogin = () => {
-    setIsAdminAuthenticated(true);
-    setAdminLoginModalOpen(false);
+  // スタッフログイン成功時の処理
+  const handleStaffLogin = async (user, staffData) => {
+    setCurrentUser(user);
+    setCurrentStaff(staffData);
+    
+    // テナント情報を取得
+    const tenantDoc = await getDoc(doc(db, "tenants", staffData.tenantId));
+    if (tenantDoc.exists()) {
+      setCurrentTenant(tenantDoc.data());
+    }
+    
+    setStaffLoginModalOpen(false);
     setPage("admin");
   };
 
-  // 管理画面ログインモーダルを閉じる
-  const handleCloseAdminLoginModal = () => {
-    setAdminLoginModalOpen(false);
+  // スタッフログインモーダルを閉じる
+  const handleCloseStaffLoginModal = () => {
+    setStaffLoginModalOpen(false);
   };
 
-  // 管理画面ログアウト処理
-  const handleAdminLogout = () => {
-    setIsAdminAuthenticated(false);
-    setPage("customer");
+  // ログアウト処理
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setCurrentUser(null);
+      setCurrentStaff(null);
+      setCurrentTenant(null);
+      setPage("customer");
+    } catch (error) {
+      console.error("ログアウトエラー:", error);
+    }
   };
 
   // QRスキャナーを開く
@@ -2813,14 +3096,55 @@ export default function App() {
     // 必要に応じて更新通知などを追加
   };
 
-  // Firestoreからデータをリアルタイムで購読する
+  // 認証状態とFirestoreからデータをリアルタイムで購読する
   useEffect(() => {
+    // Firebase Authentication の状態変化を監視
+    const unsubscribeAuth = onAuthStateChanged(auth, async (user) => {
+      if (user) {
+        // ログイン済みの場合、スタッフ情報を取得
+        const staffDoc = await getDoc(doc(db, "staff", user.uid));
+        if (staffDoc.exists()) {
+          const staffData = staffDoc.data();
+          setCurrentUser(user);
+          setCurrentStaff(staffData);
+          
+          // テナント情報を取得
+          const tenantDoc = await getDoc(doc(db, "tenants", staffData.tenantId));
+          if (tenantDoc.exists()) {
+            setCurrentTenant(tenantDoc.data());
+          }
+        }
+      } else {
+        // ログアウト状態
+        setCurrentUser(null);
+        setCurrentStaff(null);
+        setCurrentTenant(null);
+      }
+    });
+
     const initializeAppAndData = async () => {
       try {
         await setupInitialData();
+        
+        // デモ用のデフォルトテナントID
+        const defaultTenantId = "demo-store-001";
 
+        // カテゴリを取得（テナント毎）
+        const unsubscribeCategories = onSnapshot(
+          query(collection(db, "categories"), where("tenantId", "==", defaultTenantId)),
+          (snapshot) => {
+            const categoriesData = snapshot.docs.map((doc) => ({
+              id: doc.id,
+              ...doc.data(),
+            }));
+            categoriesData.sort((a, b) => a.order - b.order);
+            setCategories(categoriesData);
+          }
+        );
+
+        // 商品を取得（テナント毎）
         const unsubscribeProducts = onSnapshot(
-          collection(db, "products"),
+          query(collection(db, "products"), where("tenantId", "==", defaultTenantId)),
           (snapshot) => {
             const productsData = snapshot.docs.map((doc) => ({
               id: doc.id,
@@ -2831,8 +3155,9 @@ export default function App() {
           }
         );
 
+        // 注文を取得（テナント毎）
         const unsubscribeOrders = onSnapshot(
-          collection(db, "orders"),
+          query(collection(db, "orders"), where("tenantId", "==", defaultTenantId)),
           (snapshot) => {
             const ordersData = snapshot.docs.map((doc) => ({
               id: doc.id,
@@ -2869,6 +3194,7 @@ export default function App() {
         );
 
         return () => {
+          unsubscribeCategories();
           unsubscribeProducts();
           unsubscribeOrders();
         };
@@ -2888,6 +3214,7 @@ export default function App() {
     const cleanupPromise = initializeAppAndData();
 
     return () => {
+      unsubscribeAuth();
       cleanupPromise.then((cleanup) => {
         if (cleanup) {
           cleanup();
@@ -2968,6 +3295,10 @@ export default function App() {
             cartModalOpen={cartModalOpen}
             setCartModalOpen={setCartModalOpen}
             setSelectedProduct={setSelectedProduct}
+            currentTenant={currentTenant}
+            categories={categories}
+            currentCategory={currentCategory}
+            setCurrentCategory={setCurrentCategory}
           />
         );
       case "admin":
@@ -2975,7 +3306,9 @@ export default function App() {
           <AdminPage
             products={products}
             orders={orders}
-            onLogout={handleAdminLogout}
+            currentStaff={currentStaff}
+            currentTenant={currentTenant}
+            onLogout={handleLogout}
             onOpenScanner={handleOpenScanner}
             onOpenProductManagement={handleOpenProductManagement}
             onCancelOrder={handleCancelOrder}
@@ -2998,6 +3331,8 @@ export default function App() {
         return (
           <ProductManagement
             products={products}
+            categories={categories}
+            currentTenant={currentTenant}
             onClose={handleCloseProductManagement}
             onProductUpdate={handleProductUpdate}
           />
@@ -3028,15 +3363,19 @@ export default function App() {
           onAdminClick={handleAdminClick}
           cart={cart}
           setCartModalOpen={setCartModalOpen}
+          currentTenant={currentTenant}
         />
       )}
       <main>{renderPage()}</main>
 
-      {/* 管理画面ログインモーダル */}
-      <AdminLoginModal
-        isOpen={adminLoginModalOpen}
-        onClose={handleCloseAdminLoginModal}
-        onLogin={handleAdminLogin}
+      {/* 管理者ログイン情報表示 */}
+      <AdminLoginInfo />
+
+      {/* スタッフログインモーダル */}
+      <StaffLoginModal
+        isOpen={staffLoginModalOpen}
+        onClose={handleCloseStaffLoginModal}
+        onLogin={handleStaffLogin}
       />
 
       {/* QRコード読み取り画面 */}

@@ -12,8 +12,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata = {
-  title: "BlueRush Store | ブルーラッシュ",
-  description: "アイスクリーム注文システム - 簡単注文、QR整理券、リアルタイム在庫管理",
+  title: "モバイルオーダーシステム | 飲食店向け注文管理",
+  description: "飲食店向けモバイルオーダーシステム - 簡単注文、電子決済、QR整理券、リアルタイム在庫管理、顧客管理機能",
 };
 
 export default function RootLayout({ children }) {

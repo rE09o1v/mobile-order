@@ -1,6 +1,7 @@
 {
-  "name": "ice-cream-app",
-  "version": "0.1.0",
+  "name": "mobile-order-system",
+  "version": "1.0.0",
+  "description": "飲食店向けモバイルオーダーシステム - 注文受付、決済連携、顧客管理、売上分析",
   "private": true,
   "scripts": {
     "dev": "next dev",
