@@ -48,6 +48,7 @@ import {
   Upload,
   Image as ImageIcon,
   RotateCcw,
+  Settings,
 } from "lucide-react";
 import { Html5QrcodeScanner } from "html5-qrcode";
 
@@ -271,13 +272,14 @@ const setupInitialData = async () => {
       // エラーが発生してもフォールバック用のUIDを使用してFirestoreデータは作成
     }
 
-    // 管理者用スタッフアカウントデータ
+    // 管理者用スタッフアカウントデータ（システム管理者）
     const adminStaffData = {
       id: adminUid,
       tenantId: defaultTenantId,
       role: "owner",
-      name: "管理者",
+      name: "システム管理者",
       email: adminEmail,
+      isSuperAdmin: true, // システム管理者フラグ
       createdAt: new Date()
     };
 
@@ -306,6 +308,115 @@ const setupInitialData = async () => {
   } else {
     console.log("データは既に存在します。");
   }
+};
+
+// --- 新しいテナント作成関数 ---
+const createNewTenant = async (tenantData, adminEmail, adminPassword) => {
+  console.log(`新しいテナント ${tenantData.id} を作成します...`);
+
+  // Firebase Authでスタッフアカウントを作成または取得
+  let adminUid = `${tenantData.id}-admin-001`; // フォールバック用
+  try {
+    // 既存アカウントがあるかチェック
+    try {
+      const userCredential = await signInWithEmailAndPassword(auth, adminEmail, adminPassword);
+      adminUid = userCredential.user.uid;
+      await signOut(auth);
+      console.log(`管理者アカウントのUID取得: ${adminEmail} UID: ${adminUid}`);
+    } catch (signInError) {
+      // アカウントが存在しない場合は作成
+      if (signInError.code === 'auth/user-not-found' || signInError.code === 'auth/wrong-password' || signInError.code === 'auth/invalid-credential') {
+        const userCredential = await createUserWithEmailAndPassword(auth, adminEmail, adminPassword);
+        adminUid = userCredential.user.uid;
+        await signOut(auth);
+        console.log(`新しい管理者アカウントを作成: ${adminEmail} UID: ${adminUid}`);
+      } else {
+        throw signInError;
+      }
+    }
+  } catch (authError) {
+    console.error("管理者アカウント作成/確認でエラー:", authError);
+    throw new Error(`管理者アカウントの作成に失敗しました: ${authError.message}`);
+  }
+
+  // カテゴリデータ
+  const categories = [
+    { id: `${tenantData.id}-main`, tenantId: tenantData.id, name: "メイン料理", order: 1 },
+    { id: `${tenantData.id}-drinks`, tenantId: tenantData.id, name: "ドリンク", order: 2 },
+    { id: `${tenantData.id}-desserts`, tenantId: tenantData.id, name: "デザート", order: 3 }
+  ];
+
+  // 初期商品データ
+  const initialProducts = [
+    {
+      id: `${tenantData.id}-product-001`,
+      tenantId: tenantData.id,
+      name: "おすすめハンバーガー",
+      price: 890,
+      category: `${tenantData.id}-main`,
+      stock: 30,
+      maxStock: 50,
+      imageUrl: "https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=400&h=300&fit=crop",
+      description: "当店自慢のハンバーガーです。",
+      nutrition: "エネルギー: 520kcal",
+      allergens: "小麦、卵、乳成分を含む",
+      options: []
+    },
+    {
+      id: `${tenantData.id}-product-002`,
+      tenantId: tenantData.id,
+      name: "ブレンドコーヒー",
+      price: 350,
+      category: `${tenantData.id}-drinks`,
+      stock: 50,
+      maxStock: 100,
+      imageUrl: "https://images.unsplash.com/photo-1497935586351-b67a49e012bf?w=400&h=300&fit=crop",
+      description: "厳選されたコーヒー豆使用。",
+      nutrition: "エネルギー: 5kcal",
+      allergens: "なし",
+      options: [
+        { id: "temperature", name: "温度", type: "radio", required: true, choices: [
+          { id: "hot", name: "ホット", price: 0 },
+          { id: "iced", name: "アイス", price: 0 }
+        ]}
+      ]
+    }
+  ];
+
+  // 管理者スタッフデータ（通常の店舗オーナー）
+  const adminStaffData = {
+    id: adminUid,
+    tenantId: tenantData.id,
+    role: "owner",
+    name: tenantData.ownerName || "オーナー",
+    email: adminEmail,
+    isSuperAdmin: false, // 通常のオーナーはシステム管理者ではない
+    createdAt: new Date()
+  };
+
+  await runTransaction(db, async (transaction) => {
+    // テナントデータを保存
+    transaction.set(doc(db, "tenants", tenantData.id), tenantData);
+    
+    // 管理者スタッフデータを保存
+    transaction.set(doc(db, "staff", adminUid), adminStaffData);
+    
+    // カテゴリを保存
+    categories.forEach((category) => {
+      transaction.set(doc(db, "categories", category.id), category);
+    });
+    
+    // 商品を保存
+    initialProducts.forEach((prod) => {
+      transaction.set(doc(db, "products", prod.id), prod);
+    });
+    
+    // メタデータを保存
+    transaction.set(doc(db, "metadata", `latestOrder_${tenantData.id}`), { number: 0 });
+  });
+
+  console.log(`テナント ${tenantData.id} の作成が完了しました。`);
+  return { tenantId: tenantData.id, adminUid };
 };
 
 // --- スタッフログインモーダル ---
@@ -821,8 +932,8 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
           productRefs.map((ref) => transaction.get(ref))
         );
 
-        // デフォルトテナントID（実際の環境では動的に取得）
-        const tenantId = "demo-store-001";
+        // 現在選択中のテナントID
+        const tenantId = selectedTenantId;
         
         // 最新の注文番号を取得（テナント毎）
         const latestOrderRef = doc(db, "metadata", `latestOrder_${tenantId}`);
@@ -964,7 +1075,7 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
 };
 
 // --- スタッフ向け管理ページ ---
-const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductManagement, onCancelOrder }) => {
+const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductManagement, onOpenTenantManagement, onCancelOrder, currentStaff }) => {
   // 完了した注文のみを売上計算に含める
   const completedOrders = orders.filter(order => order.status === "completed");
   const totalRevenue = completedOrders.reduce(
@@ -1233,6 +1344,15 @@ const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductMan
             <RotateCcw className="w-8 h-8 mb-1" />
             <span className="text-xs">データ復元</span>
           </button>
+          {currentStaff?.isSuperAdmin && (
+            <button
+              onClick={onOpenTenantManagement}
+              className="flex flex-col items-center justify-center aspect-square bg-indigo-500 text-white font-semibold rounded-xl hover:bg-indigo-600 transition-colors"
+            >
+              <Settings className="w-8 h-8 mb-1" />
+              <span className="text-xs">テナント管理</span>
+            </button>
+          )}
           <button
             onClick={onLogout}
             className="flex flex-col items-center justify-center aspect-square bg-red-500 text-white font-semibold rounded-xl hover:bg-red-600 transition-colors"
@@ -1281,6 +1401,15 @@ const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductMan
             <RotateCcw size={16} />
             データ復元
           </button>
+          {currentStaff?.isSuperAdmin && (
+            <button
+              onClick={onOpenTenantManagement}
+              className="px-4 py-2 bg-indigo-500 text-white font-semibold rounded-lg hover:bg-indigo-600 transition-colors flex items-center gap-2"
+            >
+              <Settings size={16} />
+              テナント管理
+            </button>
+          )}
           <button
             onClick={onLogout}
             className="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg hover:bg-red-600 transition-colors flex items-center gap-2"
@@ -1741,10 +1870,26 @@ const ThankYouPage = ({ completedOrder, setPage }) => {
 const AdminLoginInfo = () => (
   <div className="fixed bottom-4 right-4 bg-blue-50 border border-blue-200 rounded-lg p-4 shadow-lg max-w-xs z-30">
     <div className="text-sm text-blue-800">
-      <div className="font-bold mb-2">🔑 管理者ログイン情報</div>
+      <div className="font-bold mb-2">🔑 システム管理者ログイン</div>
       <div className="space-y-1">
         <div><strong>メール:</strong> admin@mail.com</div>
         <div><strong>パスワード:</strong> admin0000</div>
+        <div className="text-xs bg-yellow-100 text-yellow-800 p-1 rounded mt-2">
+          ※テナント管理機能使用可能
+        </div>
+      </div>
+    </div>
+  </div>
+);
+
+const CurrentTenantInfo = ({ currentTenant, selectedTenantId }) => (
+  <div className="fixed bottom-4 left-4 bg-green-50 border border-green-200 rounded-lg p-4 shadow-lg max-w-xs z-30">
+    <div className="text-sm text-green-800">
+      <div className="font-bold mb-2">🏪 現在のテナント</div>
+      <div className="space-y-1">
+        <div><strong>ID:</strong> {selectedTenantId}</div>
+        <div><strong>店舗名:</strong> {currentTenant?.name || "未取得"}</div>
+        <div><strong>プラン:</strong> {currentTenant?.plan || "未設定"}</div>
       </div>
     </div>
   </div>
@@ -2935,9 +3080,394 @@ const RestoreModal = ({ isOpen, onClose, backups, onRestore, isProcessing }) => 
   );
 };
 
+// --- テナント管理コンポーネント ---
+const TenantManagement = ({ onClose, onTenantSelect }) => {
+  const [currentView, setCurrentView] = useState("list"); // "list", "create"
+  const [tenants, setTenants] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [isCreating, setIsCreating] = useState(false);
+  const [newTenant, setNewTenant] = useState({
+    id: "",
+    name: "",
+    ownerName: "",
+    ownerEmail: "",
+    ownerPassword: "",
+    description: "",
+    address: "",
+    phone: "",
+    plan: "standard"
+  });
+
+  // テナント一覧を取得
+  useEffect(() => {
+    const fetchTenants = async () => {
+      try {
+        const tenantsSnapshot = await getDocs(collection(db, "tenants"));
+        const tenantsData = tenantsSnapshot.docs.map((doc) => ({
+          id: doc.id,
+          ...doc.data(),
+        }));
+        setTenants(tenantsData);
+      } catch (error) {
+        console.error("テナント一覧取得エラー:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchTenants();
+  }, []);
+
+  const handleCreateTenant = async () => {
+    if (!newTenant.id || !newTenant.name || !newTenant.ownerEmail || !newTenant.ownerPassword) {
+      alert("必須項目を入力してください");
+      return;
+    }
+
+    // テナントIDの重複チェック
+    if (tenants.some(t => t.id === newTenant.id)) {
+      alert("このテナントIDは既に使用されています");
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      const tenantData = {
+        id: newTenant.id,
+        name: newTenant.name,
+        plan: newTenant.plan,
+        ownerName: newTenant.ownerName,
+        createdAt: new Date(),
+        settings: {
+          description: newTenant.description || "美味しい料理をお楽しみください",
+          address: newTenant.address || "",
+          phone: newTenant.phone || "",
+          logoUrl: "",
+          themeColor: "#3B82F6",
+          taxRate: 0.10,
+          taxType: "inclusive",
+          serviceCharge: 0,
+          businessHours: {
+            monday: { open: "11:00", close: "22:00", closed: false },
+            tuesday: { open: "11:00", close: "22:00", closed: false },
+            wednesday: { open: "11:00", close: "22:00", closed: false },
+            thursday: { open: "11:00", close: "22:00", closed: false },
+            friday: { open: "11:00", close: "22:00", closed: false },
+            saturday: { open: "11:00", close: "22:00", closed: false },
+            sunday: { open: "11:00", close: "22:00", closed: false }
+          },
+          paymentMethods: ["cash", "credit_card", "qr_payment"]
+        }
+      };
+
+      await createNewTenant(tenantData, newTenant.ownerEmail, newTenant.ownerPassword);
+
+      // テナント一覧を再取得
+      const tenantsSnapshot = await getDocs(collection(db, "tenants"));
+      const tenantsData = tenantsSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setTenants(tenantsData);
+
+      alert(`テナント「${newTenant.name}」が作成されました！\n\nログイン情報:\nメール: ${newTenant.ownerEmail}\nパスワード: ${newTenant.ownerPassword}`);
+      
+      // フォームリセット
+      setNewTenant({
+        id: "", name: "", ownerName: "", ownerEmail: "", ownerPassword: "",
+        description: "", address: "", phone: "", plan: "standard"
+      });
+      setCurrentView("list");
+    } catch (error) {
+      console.error("テナント作成エラー:", error);
+      alert("テナント作成に失敗しました: " + error.message);
+    } finally {
+      setIsCreating(false);
+    }
+  };
+
+  const handleDeleteTenant = async (tenantId) => {
+    if (!confirm(`テナント「${tenantId}」を削除しますか？\n\n注意: この操作は元に戻せません。\n関連するすべてのデータ（商品、注文、スタッフ）が削除されます。`)) {
+      return;
+    }
+
+    try {
+      // 関連データをすべて削除
+      const batch = [];
+      
+      // スタッフ削除
+      const staffSnapshot = await getDocs(query(collection(db, "staff"), where("tenantId", "==", tenantId)));
+      staffSnapshot.docs.forEach(doc => batch.push(['delete', doc.ref]));
+      
+      // 商品削除
+      const productsSnapshot = await getDocs(query(collection(db, "products"), where("tenantId", "==", tenantId)));
+      productsSnapshot.docs.forEach(doc => batch.push(['delete', doc.ref]));
+      
+      // 注文削除
+      const ordersSnapshot = await getDocs(query(collection(db, "orders"), where("tenantId", "==", tenantId)));
+      ordersSnapshot.docs.forEach(doc => batch.push(['delete', doc.ref]));
+      
+      // カテゴリ削除
+      const categoriesSnapshot = await getDocs(query(collection(db, "categories"), where("tenantId", "==", tenantId)));
+      categoriesSnapshot.docs.forEach(doc => batch.push(['delete', doc.ref]));
+      
+      // テナント削除
+      batch.push(['delete', doc(db, "tenants", tenantId)]);
+      batch.push(['delete', doc(db, "metadata", `latestOrder_${tenantId}`)]);
+
+      // バッチ実行
+      await runTransaction(db, async (transaction) => {
+        batch.forEach(([operation, ref]) => {
+          if (operation === 'delete') {
+            transaction.delete(ref);
+          }
+        });
+      });
+
+      // テナント一覧を再取得
+      const tenantsSnapshot = await getDocs(collection(db, "tenants"));
+      const tenantsData = tenantsSnapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setTenants(tenantsData);
+
+      alert(`テナント「${tenantId}」を削除しました。`);
+    } catch (error) {
+      console.error("テナント削除エラー:", error);
+      alert("テナント削除に失敗しました: " + error.message);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+        <div className="bg-white rounded-xl p-8">
+          <div className="text-center text-black">読み込み中...</div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+        {/* ヘッダー */}
+        <div className="p-6 border-b">
+          <div className="flex justify-between items-center">
+            <h2 className="text-2xl font-bold text-black">テナント管理</h2>
+            <button
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-700"
+            >
+              <X size={24} />
+            </button>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button
+              onClick={() => setCurrentView("list")}
+              className={`px-4 py-2 rounded-lg ${currentView === "list" ? "bg-blue-500 text-white" : "bg-gray-200 text-black"}`}
+            >
+              テナント一覧
+            </button>
+            <button
+              onClick={() => setCurrentView("create")}
+              className={`px-4 py-2 rounded-lg ${currentView === "create" ? "bg-blue-500 text-white" : "bg-gray-200 text-black"}`}
+            >
+              新規作成
+            </button>
+          </div>
+        </div>
+
+        {/* メインコンテンツ */}
+        <div className="flex-1 overflow-y-auto p-6">
+          {currentView === "list" ? (
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold mb-4 text-black">登録済みテナント ({tenants.length}件)</h3>
+              {tenants.length === 0 ? (
+                <div className="text-center text-gray-800 py-8">
+                  テナントが登録されていません
+                </div>
+              ) : (
+                <div className="grid gap-4">
+                  {tenants.map((tenant) => (
+                    <div key={tenant.id} className="border rounded-lg p-4">
+                      <div className="flex justify-between items-start">
+                        <div className="flex-1">
+                          <h4 className="font-semibold text-lg text-black">{tenant.name}</h4>
+                          <p className="text-sm text-black">ID: {tenant.id}</p>
+                          <p className="text-sm text-black">プラン: {tenant.plan}</p>
+                          {tenant.settings?.description && (
+                            <p className="text-sm text-black mt-1">{tenant.settings.description}</p>
+                          )}
+                          {tenant.settings?.address && (
+                            <p className="text-sm text-black">📍 {tenant.settings.address}</p>
+                          )}
+                          {tenant.settings?.phone && (
+                            <p className="text-sm text-black">📞 {tenant.settings.phone}</p>
+                          )}
+                          <p className="text-xs text-gray-500 mt-2">
+                            作成日: {tenant.createdAt?.toDate?.()?.toLocaleDateString() || "不明"}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => onTenantSelect(tenant)}
+                            className="px-3 py-1 bg-blue-500 text-white rounded text-sm hover:bg-blue-600"
+                          >
+                            切り替え
+                          </button>
+                          <button
+                            onClick={() => handleDeleteTenant(tenant.id)}
+                            className="px-3 py-1 bg-red-500 text-white rounded text-sm hover:bg-red-600"
+                          >
+                            削除
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <h3 className="text-lg font-semibold mb-4 text-black">新しいテナントを作成</h3>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">テナントID（英数字、ハイフン可）*</label>
+                  <input
+                    type="text"
+                    value={newTenant.id}
+                    onChange={(e) => setNewTenant({...newTenant, id: e.target.value.toLowerCase().replace(/[^a-z0-9-]/g, '')})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="例: cafe-tokyo-001"
+                    required
+                  />
+                  <p className="text-xs text-gray-500 mt-1">小文字・数字・ハイフンのみ使用可能</p>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">店舗名 *</label>
+                  <input
+                    type="text"
+                    value={newTenant.name}
+                    onChange={(e) => setNewTenant({...newTenant, name: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="例: 東京カフェ"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">オーナー名</label>
+                  <input
+                    type="text"
+                    value={newTenant.ownerName}
+                    onChange={(e) => setNewTenant({...newTenant, ownerName: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="例: 田中太郎"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">プラン</label>
+                  <select
+                    value={newTenant.plan}
+                    onChange={(e) => setNewTenant({...newTenant, plan: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                  >
+                    <option value="start">スタートプラン</option>
+                    <option value="standard">スタンダードプラン</option>
+                    <option value="pro">プロプラン</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">オーナーメールアドレス *</label>
+                  <input
+                    type="email"
+                    value={newTenant.ownerEmail}
+                    onChange={(e) => setNewTenant({...newTenant, ownerEmail: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="owner@example.com"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">初期パスワード *</label>
+                  <input
+                    type="password"
+                    value={newTenant.ownerPassword}
+                    onChange={(e) => setNewTenant({...newTenant, ownerPassword: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="8文字以上"
+                    required
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">電話番号</label>
+                  <input
+                    type="tel"
+                    value={newTenant.phone}
+                    onChange={(e) => setNewTenant({...newTenant, phone: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="03-1234-5678"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium mb-2 text-black">住所</label>
+                  <input
+                    type="text"
+                    value={newTenant.address}
+                    onChange={(e) => setNewTenant({...newTenant, address: e.target.value})}
+                    className="w-full px-4 py-3 border rounded-lg text-black"
+                    placeholder="東京都渋谷区..."
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2 text-black">店舗説明</label>
+                <textarea
+                  value={newTenant.description}
+                  onChange={(e) => setNewTenant({...newTenant, description: e.target.value})}
+                  className="w-full px-4 py-3 border rounded-lg text-black"
+                  rows={3}
+                  placeholder="店舗の説明文"
+                />
+              </div>
+
+              <div className="flex gap-3 pt-4 border-t">
+                <button
+                  onClick={() => setCurrentView("list")}
+                  className="flex-1 py-3 px-4 border border-gray-300 rounded-lg hover:bg-gray-50 text-black"
+                >
+                  キャンセル
+                </button>
+                <button
+                  onClick={handleCreateTenant}
+                  disabled={isCreating}
+                  className="flex-1 py-3 px-4 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300"
+                >
+                  {isCreating ? "作成中..." : "テナント作成"}
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // --- メインコンポーネント ---
 export default function App() {
-  const [page, setPage] = useState("customer"); // 'customer', 'admin', 'ticket', 'productManagement', 'thankYou', 'productDetail'
+  const [page, setPage] = useState("customer"); // 'customer', 'admin', 'ticket', 'productManagement', 'thankYou', 'productDetail', 'tenantManagement'
   const [products, setProducts] = useState([]);
   const [orders, setOrders] = useState([]);
   const [lastOrder, setLastOrder] = useState(null);
@@ -2948,6 +3478,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [currentStaff, setCurrentStaff] = useState(null);
   const [currentTenant, setCurrentTenant] = useState(null);
+  const [selectedTenantId, setSelectedTenantId] = useState("demo-store-001"); // 現在選択中のテナントID
   const [qrScannerOpen, setQrScannerOpen] = useState(false);
   const [cartModalOpen, setCartModalOpen] = useState(false);
   const [cart, setCart] = useState({});
@@ -3096,6 +3627,33 @@ export default function App() {
     // 必要に応じて更新通知などを追加
   };
 
+  // テナント管理を開く
+  const handleOpenTenantManagement = () => {
+    setPage("tenantManagement");
+  };
+
+  // テナント管理を閉じる
+  const handleCloseTenantManagement = () => {
+    setPage("admin");
+  };
+
+  // テナント選択処理
+  const handleTenantSelect = async (tenant) => {
+    try {
+      setSelectedTenantId(tenant.id);
+      setCurrentTenant(tenant);
+      
+      // 選択したテナントのデータに切り替える
+      // ここで必要に応じてデータの再読み込みを行う
+      
+      alert(`テナント「${tenant.name}」に切り替えました`);
+      setPage("admin");
+    } catch (error) {
+      console.error("テナント切り替えエラー:", error);
+      alert("テナント切り替えに失敗しました");
+    }
+  };
+
   // 認証状態とFirestoreからデータをリアルタイムで購読する
   useEffect(() => {
     // Firebase Authentication の状態変化を監視
@@ -3126,12 +3684,12 @@ export default function App() {
       try {
         await setupInitialData();
         
-        // デモ用のデフォルトテナントID
-        const defaultTenantId = "demo-store-001";
+        // 現在選択中のテナントID
+        const currentTenantId = selectedTenantId;
 
         // カテゴリを取得（テナント毎）
         const unsubscribeCategories = onSnapshot(
-          query(collection(db, "categories"), where("tenantId", "==", defaultTenantId)),
+          query(collection(db, "categories"), where("tenantId", "==", currentTenantId)),
           (snapshot) => {
             const categoriesData = snapshot.docs.map((doc) => ({
               id: doc.id,
@@ -3144,7 +3702,7 @@ export default function App() {
 
         // 商品を取得（テナント毎）
         const unsubscribeProducts = onSnapshot(
-          query(collection(db, "products"), where("tenantId", "==", defaultTenantId)),
+          query(collection(db, "products"), where("tenantId", "==", currentTenantId)),
           (snapshot) => {
             const productsData = snapshot.docs.map((doc) => ({
               id: doc.id,
@@ -3157,7 +3715,7 @@ export default function App() {
 
         // 注文を取得（テナント毎）
         const unsubscribeOrders = onSnapshot(
-          query(collection(db, "orders"), where("tenantId", "==", defaultTenantId)),
+          query(collection(db, "orders"), where("tenantId", "==", currentTenantId)),
           (snapshot) => {
             const ordersData = snapshot.docs.map((doc) => ({
               id: doc.id,
@@ -3221,7 +3779,7 @@ export default function App() {
         }
       });
     };
-  }, [page, lastOrder]); // pageとlastOrderを依存関係に追加
+  }, [page, lastOrder, selectedTenantId]); // pageとlastOrderとselectedTenantIdを依存関係に追加
 
   // URLクエリパラメータに基づいて初期ページを設定
   useEffect(() => {
@@ -3311,6 +3869,7 @@ export default function App() {
             onLogout={handleLogout}
             onOpenScanner={handleOpenScanner}
             onOpenProductManagement={handleOpenProductManagement}
+            onOpenTenantManagement={handleOpenTenantManagement}
             onCancelOrder={handleCancelOrder}
           />
         );
@@ -3335,6 +3894,13 @@ export default function App() {
             currentTenant={currentTenant}
             onClose={handleCloseProductManagement}
             onProductUpdate={handleProductUpdate}
+          />
+        );
+      case "tenantManagement":
+        return (
+          <TenantManagement
+            onClose={handleCloseTenantManagement}
+            onTenantSelect={handleTenantSelect}
           />
         );
       default:
@@ -3370,6 +3936,9 @@ export default function App() {
 
       {/* 管理者ログイン情報表示 */}
       <AdminLoginInfo />
+
+      {/* 現在のテナント情報表示 */}
+      <CurrentTenantInfo currentTenant={currentTenant} selectedTenantId={selectedTenantId} />
 
       {/* スタッフログインモーダル */}
       <StaffLoginModal
