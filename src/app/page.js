@@ -140,7 +140,7 @@ const setupInitialData = async () => {
   console.log("初期データのセットアップを確認します...");
 
   // データをリセットする場合は、この行をコメントアウトしてください
-  await deleteDoc(doc(db, "metadata", "setupComplete"));
+  // await deleteDoc(doc(db, "metadata", "setupComplete"));
 
   const metadataDoc = await getDoc(doc(db, "metadata", "setupComplete"));
   if (!metadataDoc.exists()) {
@@ -3640,19 +3640,57 @@ export default function App() {
   // テナント選択処理
   const handleTenantSelect = async (tenant) => {
     try {
-      setSelectedTenantId(tenant.id);
-      setCurrentTenant(tenant);
+      // ローディング状態を設定
+      setLoading(true);
       
-      // 選択したテナントのデータに切り替える
-      // ここで必要に応じてデータの再読み込みを行う
+      console.log("テナント切り替え開始:", tenant);
+      
+      // カート等の状態をクリア
+      setCart({});
+      setLastOrder(null);
+      setCompletedOrder(null);
+      setSelectedProduct(null);
+      setCurrentCategory("all");
+      
+      // テナントIDを更新（これによりuseEffectが実行される）
+      setSelectedTenantId(tenant.id);
       
       alert(`テナント「${tenant.name}」に切り替えました`);
       setPage("admin");
+      
+      // ローディング状態はuseEffectで新しいデータが読み込まれたら解除される
     } catch (error) {
       console.error("テナント切り替えエラー:", error);
       alert("テナント切り替えに失敗しました");
+      setLoading(false);
     }
   };
+
+  // テナント情報の更新専用useEffect
+  useEffect(() => {
+    const loadTenantInfo = async () => {
+      if (selectedTenantId && (!currentTenant || currentTenant.id !== selectedTenantId)) {
+        try {
+          const tenantDoc = await getDoc(doc(db, "tenants", selectedTenantId));
+          if (tenantDoc.exists()) {
+            const tenantData = { id: tenantDoc.id, ...tenantDoc.data() };
+            setCurrentTenant(tenantData);
+            console.log("テナント情報を更新しました:", tenantData);
+          } else {
+            console.warn("テナントが見つかりません:", selectedTenantId);
+            setCurrentTenant(null);
+          }
+        } catch (error) {
+          console.error("テナント情報の取得エラー:", error);
+          setCurrentTenant(null);
+        }
+      }
+    };
+
+    if (selectedTenantId) {
+      loadTenantInfo();
+    }
+  }, [selectedTenantId, currentTenant?.id]); // selectedTenantIdが変更されたときにテナント情報を更新
 
   // 認証状態とFirestoreからデータをリアルタイムで購読する
   useEffect(() => {
@@ -3669,7 +3707,8 @@ export default function App() {
           // テナント情報を取得
           const tenantDoc = await getDoc(doc(db, "tenants", staffData.tenantId));
           if (tenantDoc.exists()) {
-            setCurrentTenant(tenantDoc.data());
+            const tenantData = { id: tenantDoc.id, ...tenantDoc.data() };
+            setCurrentTenant(tenantData);
           }
         }
       } else {
@@ -3686,6 +3725,19 @@ export default function App() {
         
         // 現在選択中のテナントID
         const currentTenantId = selectedTenantId;
+
+        // テナント情報を取得（管理者でない場合やテナント切り替え時）
+        if (currentTenantId && (!currentStaff || !currentTenant || currentTenant.id !== currentTenantId)) {
+          try {
+            const tenantDoc = await getDoc(doc(db, "tenants", currentTenantId));
+            if (tenantDoc.exists()) {
+              const tenantData = { id: tenantDoc.id, ...tenantDoc.data() };
+              setCurrentTenant(tenantData);
+            }
+          } catch (error) {
+            console.error("テナント情報の取得エラー:", error);
+          }
+        }
 
         // カテゴリを取得（テナント毎）
         const unsubscribeCategories = onSnapshot(
@@ -3857,6 +3909,7 @@ export default function App() {
             categories={categories}
             currentCategory={currentCategory}
             setCurrentCategory={setCurrentCategory}
+            selectedTenantId={selectedTenantId}
           />
         );
       case "admin":
@@ -3914,6 +3967,11 @@ export default function App() {
             cartModalOpen={cartModalOpen}
             setCartModalOpen={setCartModalOpen}
             setSelectedProduct={setSelectedProduct}
+            currentTenant={currentTenant}
+            categories={categories}
+            currentCategory={currentCategory}
+            setCurrentCategory={setCurrentCategory}
+            selectedTenantId={selectedTenantId}
           />
         );
     }
