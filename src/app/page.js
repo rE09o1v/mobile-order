@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import Image from "next/image";
 import { initializeApp } from "firebase/app";
 import {
@@ -49,8 +49,11 @@ import {
   Image as ImageIcon,
   RotateCcw,
   Settings,
+  Copy,
+  Download,
 } from "lucide-react";
 import { Html5QrcodeScanner } from "html5-qrcode";
+import QRCode from 'qrcode';
 
 // --- Firebaseの初期設定 ---
 // Your web app's Firebase configuration
@@ -1075,7 +1078,7 @@ const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModa
 };
 
 // --- スタッフ向け管理ページ ---
-const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductManagement, onOpenTenantManagement, onCancelOrder, currentStaff }) => {
+const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductManagement, onOpenTenantManagement, onCancelOrder, currentStaff, currentTenant, selectedTenantId }) => {
   // 完了した注文のみを売上計算に含める
   const completedOrders = orders.filter(order => order.status === "completed");
   const totalRevenue = completedOrders.reduce(
@@ -1102,6 +1105,7 @@ const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductMan
   const [proxyModalOpen, setProxyModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [restoreModalOpen, setRestoreModalOpen] = useState(false);
+  const [storeQRModalOpen, setStoreQRModalOpen] = useState(false);
   const [backups, setBackups] = useState([]);
 
   // バックアップ一覧を取得
@@ -1324,6 +1328,13 @@ const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductMan
             <span className="text-xs">QRスキャン</span>
           </button>
           <button
+            onClick={() => setStoreQRModalOpen(true)}
+            className="flex flex-col items-center justify-center aspect-square bg-green-500 text-white font-semibold rounded-xl hover:bg-green-600 transition-colors"
+          >
+            <QrCode className="w-8 h-8 mb-1" />
+            <span className="text-xs">店舗QRコード</span>
+          </button>
+          <button
             onClick={handleOpenProxyModal}
             className="flex flex-col items-center justify-center aspect-square bg-green-500 text-white font-semibold rounded-xl hover:bg-green-600 transition-colors"
           >
@@ -1379,6 +1390,13 @@ const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductMan
           >
             <QrCode size={16} />
             QRスキャン
+          </button>
+          <button
+            onClick={() => setStoreQRModalOpen(true)}
+            className="px-4 py-2 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition-colors flex items-center gap-2"
+          >
+            <QrCode size={16} />
+            店舗QRコード生成
           </button>
           <button
             onClick={handleOpenProxyModal}
@@ -1621,6 +1639,16 @@ const AdminPage = ({ products, orders, onLogout, onOpenScanner, onOpenProductMan
           products={products}
           onClose={() => setProxyModalOpen(false)}
           onOrder={handleProxyOrder}
+        />
+      )}
+
+      {/* 店舗QRコードモーダル */}
+      {storeQRModalOpen && (
+        <StoreQRModal
+          isOpen={storeQRModalOpen}
+          onClose={() => setStoreQRModalOpen(false)}
+          selectedTenantId={selectedTenantId}
+          currentTenant={currentTenant}
         />
       )}
     </div>
@@ -2114,6 +2142,264 @@ const ProxyOrderModal = ({ products, onClose, onOrder }) => {
             >
               {isOrdering ? "注文中..." : "注文確定"}
             </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- 店舗QRコードモーダル ---
+const StoreQRModal = ({ isOpen, onClose, selectedTenantId, currentTenant }) => {
+  const [copied, setCopied] = useState(false);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  // お客さん用URL生成
+  const customerUrl = `${typeof window !== 'undefined' ? window.location.origin : ''}/?tenant=${selectedTenantId}`;
+
+  // QRコード生成
+  const generateQRCode = useCallback(async () => {
+    if (!customerUrl) return;
+    
+    setIsGenerating(true);
+    try {
+      const options = {
+        width: 300,
+        margin: 2,
+        color: {
+          dark: '#000000',
+          light: '#FFFFFF'
+        },
+        errorCorrectionLevel: 'M'
+      };
+
+      const dataUrl = await QRCode.toDataURL(customerUrl, options);
+      setQrCodeDataUrl(dataUrl);
+    } catch (error) {
+      console.error('QRコード生成エラー:', error);
+      alert('QRコードの生成に失敗しました');
+    } finally {
+      setIsGenerating(false);
+    }
+  }, [customerUrl]);
+
+  // モーダルが開かれた時にQRコードを生成
+  useEffect(() => {
+    if (isOpen && customerUrl) {
+      generateQRCode();
+    }
+  }, [isOpen, generateQRCode, customerUrl]);
+
+  if (!isOpen) return null;
+
+  // URLをコピー
+  const handleCopyUrl = async () => {
+    try {
+      await navigator.clipboard.writeText(customerUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (error) {
+      console.error('URLのコピーに失敗しました:', error);
+      alert('URLのコピーに失敗しました');
+    }
+  };
+
+  // QRコードをダウンロード
+  const handleDownloadQR = () => {
+    if (!qrCodeDataUrl) return;
+    
+    const link = document.createElement('a');
+    link.href = qrCodeDataUrl;
+    link.download = `${currentTenant?.name || selectedTenantId}_store_qr.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // QRコードを印刷用に表示
+  const handlePrintQR = () => {
+    if (!qrCodeDataUrl) return;
+    
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>店舗QRコード - ${currentTenant?.name || '店舗'}</title>
+          <style>
+            body { 
+              font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+              text-align: center; 
+              padding: 20px;
+              margin: 0;
+            }
+            .qr-container {
+              display: inline-block;
+              border: 2px solid #000;
+              padding: 20px;
+              margin: 20px 0;
+            }
+            .store-info {
+              margin-bottom: 20px;
+            }
+            .instructions {
+              margin-top: 20px;
+              font-size: 14px;
+              color: #666;
+            }
+            @media print {
+              body { margin: 0; padding: 10px; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="store-info">
+            <h1>${currentTenant?.name || '店舗'}</h1>
+            <p>${currentTenant?.settings?.description || ''}</p>
+            <p>${currentTenant?.settings?.address || ''}</p>
+          </div>
+          <div class="qr-container">
+            <img src="${qrCodeDataUrl}" alt="店舗注文用QRコード" style="width: 250px; height: 250px;" />
+          </div>
+          <div class="instructions">
+            <h3>📱 ご注文方法</h3>
+            <p>スマートフォンでQRコードを読み取って<br>メニューをご覧ください</p>
+          </div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-lg w-full max-h-[90vh] overflow-y-auto">
+        <div className="p-6">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="text-2xl font-bold text-gray-800">店舗用QRコード</h2>
+            <button
+              onClick={onClose}
+              className="text-gray-500 hover:text-gray-700 transition-colors"
+            >
+              <X size={24} />
+            </button>
+          </div>
+
+          {/* 店舗情報 */}
+          {currentTenant && (
+            <div className="mb-6 p-4 bg-gray-50 rounded-lg">
+              <h3 className="font-bold text-lg mb-2" style={{ color: currentTenant.settings?.themeColor }}>
+                {currentTenant.name}
+              </h3>
+              <p className="text-gray-600 text-sm mb-2">{currentTenant.settings?.description}</p>
+              <div className="text-sm text-gray-500">
+                <p>{currentTenant.settings?.address}</p>
+                <p>TEL: {currentTenant.settings?.phone}</p>
+              </div>
+            </div>
+          )}
+
+          {/* QRコード */}
+          <div className="text-center mb-6">
+            <h4 className="font-medium text-gray-700 mb-4">お客さん用注文QRコード</h4>
+            <div className="inline-block p-4 bg-white border-2 border-gray-200 rounded-lg shadow-sm">
+              {isGenerating ? (
+                <div className="w-64 h-64 flex items-center justify-center">
+                  <div className="text-center">
+                    <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-2"></div>
+                    <p className="text-sm text-gray-500">QRコード生成中...</p>
+                  </div>
+                </div>
+              ) : qrCodeDataUrl ? (
+                <img
+                  src={qrCodeDataUrl}
+                  alt="店舗注文用QRコード"
+                  className="w-64 h-64 mx-auto"
+                />
+              ) : (
+                <div className="w-64 h-64 flex items-center justify-center">
+                  <div className="text-center">
+                    <QrCode size={48} className="mx-auto mb-2 text-gray-400" />
+                    <p className="text-sm text-gray-500">QRコード生成エラー</p>
+                    <button 
+                      onClick={generateQRCode}
+                      className="text-blue-500 underline text-sm mt-1"
+                    >
+                      再生成
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="text-sm text-gray-500 mt-2">
+              お客さんがこのQRコードを読み込むと、<br />
+              この店舗の注文ページにアクセスできます
+            </p>
+          </div>
+
+          {/* URL表示とコピー */}
+          <div className="mb-6">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              お客さん用URL
+            </label>
+            <div className="flex">
+              <input
+                type="text"
+                value={customerUrl}
+                readOnly
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-l-md bg-gray-50 text-sm"
+              />
+              <button
+                onClick={handleCopyUrl}
+                className={`px-4 py-2 border border-l-0 border-gray-300 rounded-r-md text-sm font-medium transition-colors ${
+                  copied
+                    ? 'bg-green-500 text-white'
+                    : 'bg-gray-50 text-gray-700 hover:bg-gray-100'
+                }`}
+              >
+                <Copy size={16} />
+                {copied ? 'コピー済み' : 'コピー'}
+              </button>
+            </div>
+          </div>
+
+          {/* アクションボタン */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <button
+              onClick={handleDownloadQR}
+              disabled={!qrCodeDataUrl}
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 disabled:bg-gray-300 transition-colors flex items-center justify-center gap-2"
+            >
+              <Download size={16} />
+              QRコードをダウンロード
+            </button>
+            <button
+              onClick={handlePrintQR}
+              disabled={!qrCodeDataUrl}
+              className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 disabled:bg-gray-300 transition-colors flex items-center justify-center gap-2"
+            >
+              <QrCode size={16} />
+              印刷用表示
+            </button>
+            <button
+              onClick={onClose}
+              className="md:col-span-2 px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+            >
+              閉じる
+            </button>
+          </div>
+
+          {/* 使用方法の説明 */}
+          <div className="mt-6 p-4 bg-blue-50 rounded-lg">
+            <h5 className="font-medium text-blue-800 mb-2">📱 使用方法</h5>
+            <ol className="text-sm text-blue-700 space-y-1">
+              <li>1. QRコードを印刷して店内に掲示</li>
+              <li>2. お客さんにスマートフォンでQRコードを読み込んでもらう</li>
+              <li>3. お客さんが商品を選んで注文</li>
+              <li>4. 注文が管理画面に表示されます</li>
+            </ol>
           </div>
         </div>
       </div>
@@ -3478,7 +3764,7 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
   const [currentStaff, setCurrentStaff] = useState(null);
   const [currentTenant, setCurrentTenant] = useState(null);
-  const [selectedTenantId, setSelectedTenantId] = useState("demo-store-001"); // 現在選択中のテナントID
+  const [selectedTenantId, setSelectedTenantId] = useState(null); // URLパラメータから設定
   const [qrScannerOpen, setQrScannerOpen] = useState(false);
   const [cartModalOpen, setCartModalOpen] = useState(false);
   const [cart, setCart] = useState({});
@@ -3666,6 +3952,20 @@ export default function App() {
     }
   };
 
+  // URLパラメータからテナントIDを取得（初期化時のみ実行）
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tenantParam = params.get("tenant");
+    
+    if (tenantParam) {
+      console.log("URLパラメータからテナントIDを設定:", tenantParam);
+      setSelectedTenantId(tenantParam);
+    } else {
+      // URLパラメータがない場合はデフォルトテナントを使用
+      setSelectedTenantId("demo-store-001");
+    }
+  }, []); // 初期化時のみ実行
+
   // テナント情報の更新専用useEffect
   useEffect(() => {
     const loadTenantInfo = async () => {
@@ -3725,6 +4025,12 @@ export default function App() {
         
         // 現在選択中のテナントID
         const currentTenantId = selectedTenantId;
+
+        // selectedTenantIdがnullの場合は何もしない（初期化中）
+        if (!currentTenantId) {
+          setLoading(false);
+          return;
+        }
 
         // テナント情報を取得（管理者でない場合やテナント切り替え時）
         if (currentTenantId && (!currentStaff || !currentTenant || currentTenant.id !== currentTenantId)) {
@@ -3838,6 +4144,14 @@ export default function App() {
     const params = new URLSearchParams(window.location.search);
     const initialPage = params.get("page");
     const orderId = params.get("orderId");
+    const tenantParam = params.get("tenant");
+
+    // テナントIDが指定されている場合は設定（店舗用QRコード読み込み時）
+    if (tenantParam && tenantParam !== selectedTenantId) {
+      setSelectedTenantId(tenantParam);
+      setPage("customer"); // お客さん向けページに遷移
+      return;
+    }
 
     if (initialPage === "admin" || initialPage === "customer") {
       setPage(initialPage);
@@ -3861,7 +4175,7 @@ export default function App() {
         }
       }
     }
-  }, [orders]);
+  }, [orders, selectedTenantId]);
 
   const renderPage = () => {
     if (firebaseConfig.apiKey === "YOUR_API_KEY" || !firebaseConfig.projectId) {
@@ -3919,6 +4233,7 @@ export default function App() {
             orders={orders}
             currentStaff={currentStaff}
             currentTenant={currentTenant}
+            selectedTenantId={selectedTenantId}
             onLogout={handleLogout}
             onOpenScanner={handleOpenScanner}
             onOpenProductManagement={handleOpenProductManagement}
