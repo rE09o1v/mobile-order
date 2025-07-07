@@ -900,7 +900,7 @@ const CartModal = ({ cart, setCart, onCheckout, onClose }) => {
 };
 
 // --- 顧客向け注文ページ ---
-const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModalOpen, setCartModalOpen, setSelectedProduct, currentTenant, categories, currentCategory, setCurrentCategory }) => {
+const CustomerPage = ({ products, setPage, setLastOrder, cart, setCart, cartModalOpen, setCartModalOpen, setSelectedProduct, currentTenant, categories, currentCategory, setCurrentCategory, selectedTenantId }) => {
   const handleViewDetail = (product) => {
     setSelectedProduct(product);
     setPage("productDetail");
